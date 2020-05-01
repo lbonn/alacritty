@@ -118,8 +118,11 @@ pub struct TextShaderProgram {
 
     /// Background pass flag.
     ///
-    /// Rendering is split into two passes; 1 for backgrounds, and one for text.
-    u_background: GLint,
+    /// Rendering is split into three passes:
+    /// 0 for backgrounds
+    /// 1 for regular text
+    /// 2 for colored glyphs
+    u_pass: GLint,
 }
 
 /// Rectangle drawing program.
@@ -418,8 +421,27 @@ struct InstanceData {
     bg_g: f32,
     bg_b: f32,
     bg_a: f32,
-    // boolean set to true if the glyph already is colored (typically RGBA emojis)
-    pre_colored: u8,
+}
+
+#[derive(Copy, Debug, Clone)]
+pub enum LayerType {
+    RegularGlyphs = 0,
+    ColoredGlyphs = 1,
+}
+
+#[derive(Debug)]
+pub struct Layer {
+    current_atlas: usize,
+    active_tex: GLuint,
+    batch: Batch,
+    atlas: Vec<Atlas>,
+}
+
+impl Layer {
+    #[inline]
+    pub fn new() -> Self {
+        Self {current_atlas: 0, active_tex: 0, batch: Batch::new(), atlas: vec!()}
+    }
 }
 
 #[derive(Debug)]
@@ -431,28 +453,21 @@ pub struct QuadRenderer {
     vbo_instance: GLuint,
     rect_vao: GLuint,
     rect_vbo: GLuint,
-    atlas: Vec<Atlas>,
-    current_atlas: usize,
-    active_tex: GLuint,
-    batch: Batch,
+    layers: Vec<Layer>,
     rx: mpsc::Receiver<Msg>,
 }
 
 #[derive(Debug)]
 pub struct RenderApi<'a, C> {
-    active_tex: &'a mut GLuint,
-    batch: &'a mut Batch,
-    atlas: &'a mut Vec<Atlas>,
-    current_atlas: &'a mut usize,
     program: &'a mut TextShaderProgram,
+    layers: &'a mut Vec<Layer>,
+    bound_tex: GLuint,
     config: &'a Config<C>,
 }
 
 #[derive(Debug)]
 pub struct LoaderApi<'a> {
-    active_tex: &'a mut GLuint,
-    atlas: &'a mut Vec<Atlas>,
-    current_atlas: &'a mut usize,
+    layers: &'a mut Vec<Layer>,
 }
 
 #[derive(Debug, Default)]
@@ -471,7 +486,6 @@ impl Batch {
         if self.is_empty() {
             self.tex = glyph.tex_id;
         }
-
 
         self.instances.push(InstanceData {
             col: cell.column.0 as f32,
@@ -495,7 +509,6 @@ impl Batch {
             bg_g: f32::from(cell.bg.g),
             bg_b: f32::from(cell.bg.b),
             bg_a: cell.bg_alpha,
-            pre_colored: glyph.colored as u8,
         });
     }
 
@@ -639,17 +652,6 @@ impl QuadRenderer {
             );
             gl::EnableVertexAttribArray(4);
             gl::VertexAttribDivisor(4, 1);
-            // preColoredGlyph attribute
-            gl::VertexAttribPointer(
-                5,
-                1,
-                gl::BYTE,
-                gl::FALSE,
-                size_of::<InstanceData>() as i32,
-                (17 * size_of::<f32>()) as *const _,
-            );
-            gl::EnableVertexAttribArray(5);
-            gl::VertexAttribDivisor(5, 1);
 
             // Rectangle setup.
             gl::GenVertexArrays(1, &mut rect_vao);
@@ -702,7 +704,13 @@ impl QuadRenderer {
             });
         }
 
-        let mut renderer = Self {
+        let mut layers = Vec::new();
+        layers.push(Layer::new());
+        layers.push(Layer::new());
+        layers[0].atlas.push(Atlas::new(ATLAS_SIZE, gl::RGB));
+        layers[1].atlas.push(Atlas::new(ATLAS_SIZE, gl::RGBA));
+
+        let renderer = Self {
             program,
             rect_program,
             vao,
@@ -710,15 +718,9 @@ impl QuadRenderer {
             vbo_instance,
             rect_vao,
             rect_vbo,
-            atlas: Vec::new(),
-            current_atlas: 0,
-            active_tex: 0,
-            batch: Batch::new(),
+            layers: layers,
             rx: msg_rx,
         };
-
-        let atlas = Atlas::new(ATLAS_SIZE);
-        renderer.atlas.push(atlas);
 
         Ok(renderer)
     }
@@ -798,11 +800,9 @@ impl QuadRenderer {
         }
 
         let res = func(RenderApi {
-            active_tex: &mut self.active_tex,
-            batch: &mut self.batch,
-            atlas: &mut self.atlas,
-            current_atlas: &mut self.current_atlas,
+            layers: &mut self.layers,
             program: &mut self.program,
+            bound_tex: 0,
             config,
         });
 
@@ -826,9 +826,7 @@ impl QuadRenderer {
         }
 
         func(LoaderApi {
-            active_tex: &mut self.active_tex,
-            atlas: &mut self.atlas,
-            current_atlas: &mut self.current_atlas,
+            layers: &mut self.layers,
         })
     }
 
@@ -857,7 +855,8 @@ impl QuadRenderer {
             },
         };
 
-        self.active_tex = 0;
+        self.layers[0].active_tex = 0;
+        self.layers[1].active_tex = 0;
         self.program = program;
         self.rect_program = rect_program;
     }
@@ -937,44 +936,47 @@ impl<'a, C> RenderApi<'a, C> {
         }
     }
 
-    fn render_batch(&mut self) {
+    fn render_batch(&mut self, layer_type: LayerType) {
+        let layer = &mut self.layers[layer_type as usize];
+
         unsafe {
             gl::BufferSubData(
                 gl::ARRAY_BUFFER,
                 0,
-                self.batch.size() as isize,
-                self.batch.instances.as_ptr() as *const _,
+                layer.batch.size() as isize,
+                layer.batch.instances.as_ptr() as *const _,
             );
         }
 
         // Bind texture if necessary.
-        if *self.active_tex != self.batch.tex {
+        if self.bound_tex != layer.batch.tex {
             unsafe {
-                gl::BindTexture(gl::TEXTURE_2D, self.batch.tex);
+                gl::BindTexture(gl::TEXTURE_2D, layer.batch.tex);
             }
-            *self.active_tex = self.batch.tex;
+            self.bound_tex = layer.batch.tex;
+            layer.active_tex = layer.batch.tex;
         }
 
         unsafe {
-            self.program.set_background_pass(true);
+            self.program.set_pass(0);
             gl::DrawElementsInstanced(
                 gl::TRIANGLES,
                 6,
                 gl::UNSIGNED_INT,
                 ptr::null(),
-                self.batch.len() as GLsizei,
+                layer.batch.len() as GLsizei,
             );
-            self.program.set_background_pass(false);
+            self.program.set_pass(match &layer_type { LayerType::ColoredGlyphs => 2, _ => 1 });
             gl::DrawElementsInstanced(
                 gl::TRIANGLES,
                 6,
                 gl::UNSIGNED_INT,
                 ptr::null(),
-                self.batch.len() as GLsizei,
+                layer.batch.len() as GLsizei,
             );
         }
 
-        self.batch.clear();
+        layer.batch.clear();
     }
 
     /// Render a string in a variable location. Used for printing the render timer, warnings and
@@ -1014,16 +1016,24 @@ impl<'a, C> RenderApi<'a, C> {
 
     #[inline]
     fn add_render_item(&mut self, cell: RenderableCell, glyph: &Glyph) {
+        let layer_id = match glyph.colored {
+            false => LayerType::RegularGlyphs,
+            true => LayerType::ColoredGlyphs,
+        };
+        let batch = &self.layers[layer_id as usize].batch;
+
         // Flush batch if tex changing.
-        if !self.batch.is_empty() && self.batch.tex != glyph.tex_id {
-            self.render_batch();
+        if !batch.is_empty() && batch.tex != glyph.tex_id {
+            self.render_batch(layer_id);
         }
 
-        self.batch.add_item(cell, glyph);
+        let batch = &mut self.layers[layer_id as usize].batch;
+
+        batch.add_item(cell, glyph);
 
         // Render batch and clear if it's full.
-        if self.batch.full() {
-            self.render_batch();
+        if batch.full() {
+            self.render_batch(layer_id);
         }
     }
 
@@ -1096,23 +1106,27 @@ impl<'a, C> RenderApi<'a, C> {
 /// If the current atlas is full, a new one will be created.
 #[inline]
 fn load_glyph(
-    active_tex: &mut GLuint,
-    atlas: &mut Vec<Atlas>,
-    current_atlas: &mut usize,
+    layers: &mut Vec<Layer>,
     rasterized: &RasterizedGlyph,
 ) -> Glyph {
-    // At least one atlas is guaranteed to be in the `self.atlas` list; thus
-    // the unwrap.
+    let (layer, atlas_type) = &mut match rasterized.buf {
+        BitmapBuffer::RGB(_) => (&mut layers[0], gl::RGB),
+        BitmapBuffer::RGBA(_) => (&mut layers[1], gl::RGBA),
+    };
+    let current_atlas = &mut layer.current_atlas;
+    let atlas = &mut layer.atlas;
+    let active_tex = &mut layer.active_tex;
+
     match atlas[*current_atlas].insert(rasterized, active_tex) {
         Ok(glyph) => glyph,
         Err(AtlasInsertError::Full) => {
             *current_atlas += 1;
             if *current_atlas == atlas.len() {
-                let new = Atlas::new(ATLAS_SIZE);
+                let new = Atlas::new(ATLAS_SIZE, *atlas_type);
                 *active_tex = 0; // Atlas::new binds a texture. Ugh this is sloppy.
                 atlas.push(new);
             }
-            load_glyph(active_tex, atlas, current_atlas, rasterized)
+            atlas[*current_atlas].insert(rasterized, active_tex).unwrap()
         },
         Err(AtlasInsertError::GlyphTooLarge) => Glyph {
             tex_id: atlas[*current_atlas].id,
@@ -1130,37 +1144,42 @@ fn load_glyph(
 }
 
 #[inline]
-fn clear_atlas(atlas: &mut Vec<Atlas>, current_atlas: &mut usize) {
-    for atlas in atlas.iter_mut() {
-        atlas.clear();
+fn clear_atlas(layers: &mut Vec<Layer>) {
+    for k in 0..=1 {
+        for atlas in layers[k].atlas.iter_mut() {
+            atlas.clear();
+        }
+        layers[k].current_atlas = 0;
     }
-    *current_atlas = 0;
 }
 
 impl<'a> LoadGlyph for LoaderApi<'a> {
     fn load_glyph(&mut self, rasterized: &RasterizedGlyph) -> Glyph {
-        load_glyph(self.active_tex, self.atlas, self.current_atlas, rasterized)
+        load_glyph(self.layers, rasterized)
     }
 
     fn clear(&mut self) {
-        clear_atlas(self.atlas, self.current_atlas)
+        clear_atlas(self.layers)
     }
 }
 
 impl<'a, C> LoadGlyph for RenderApi<'a, C> {
     fn load_glyph(&mut self, rasterized: &RasterizedGlyph) -> Glyph {
-        load_glyph(self.active_tex, self.atlas, self.current_atlas, rasterized)
+        load_glyph(self.layers, rasterized)
     }
 
     fn clear(&mut self) {
-        clear_atlas(self.atlas, self.current_atlas)
+        clear_atlas(self.layers)
     }
 }
 
 impl<'a, C> Drop for RenderApi<'a, C> {
     fn drop(&mut self) {
-        if !self.batch.is_empty() {
-            self.render_batch();
+        if !self.layers[0].batch.is_empty() {
+            self.render_batch(LayerType::RegularGlyphs);
+        }
+        if !self.layers[1].batch.is_empty() {
+            self.render_batch(LayerType::ColoredGlyphs);
         }
     }
 }
@@ -1199,21 +1218,21 @@ impl TextShaderProgram {
         }
 
         // get uniform locations
-        let (projection, cell_dim, background) = unsafe {
+        let (projection, cell_dim, pass) = unsafe {
             (
                 gl::GetUniformLocation(program, cptr!(b"projection\0")),
                 gl::GetUniformLocation(program, cptr!(b"cellDim\0")),
-                gl::GetUniformLocation(program, cptr!(b"backgroundPass\0")),
+                gl::GetUniformLocation(program, cptr!(b"pass\0")),
             )
         };
 
-        assert_uniform_valid!(projection, cell_dim, background);
+        assert_uniform_valid!(projection, cell_dim, pass);
 
         let shader = Self {
             id: program,
             u_projection: projection,
             u_cell_dim: cell_dim,
-            u_background: background,
+            u_pass: pass,
         };
 
         unsafe {
@@ -1250,11 +1269,9 @@ impl TextShaderProgram {
         }
     }
 
-    fn set_background_pass(&self, background_pass: bool) {
-        let value = if background_pass { 1 } else { 0 };
-
+    fn set_pass(&self, pass_id: i32) {
         unsafe {
-            gl::Uniform1i(self.u_background, value);
+            gl::Uniform1i(self.u_pass, pass_id);
         }
     }
 }
@@ -1505,6 +1522,7 @@ struct Atlas {
 }
 
 /// Error that can happen when inserting a texture to the Atlas.
+#[derive(Debug)]
 enum AtlasInsertError {
     /// Texture atlas is full.
     Full,
@@ -1514,23 +1532,20 @@ enum AtlasInsertError {
 }
 
 impl Atlas {
-    fn new(size: i32) -> Self {
+    fn new(size: i32, tex_type: gl::types::GLenum) -> Self {
         let mut id: GLuint = 0;
         unsafe {
             gl::PixelStorei(gl::UNPACK_ALIGNMENT, 1);
             gl::GenTextures(1, &mut id);
             gl::BindTexture(gl::TEXTURE_2D, id);
-            // We use an RGBA atlas that can handle colored glyphs.
-            // As they usually are outnumbered by regular text glyphs, this is slightly wasteful.
-            // Another way would be to have a separate atlas for RGBA and render in two passes.
             gl::TexImage2D(
                 gl::TEXTURE_2D,
                 0,
-                gl::RGBA as i32,
+                tex_type as i32,
                 size,
                 size,
                 0,
-                gl::RGBA,
+                tex_type,
                 gl::UNSIGNED_BYTE,
                 ptr::null(),
             );

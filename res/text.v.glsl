@@ -27,18 +27,15 @@ layout (location = 3) in vec3 textColor;
 // Background color
 layout (location = 4) in vec4 backgroundColor;
 
-layout (location = 5) in int preColoredGlyph;
-
 out vec2 TexCoords;
 flat out vec3 fg;
 flat out vec4 bg;
-flat out int preColored;
 
 // Terminal properties
 uniform vec2 cellDim;
 uniform vec4 projection;
 
-uniform int backgroundPass;
+uniform int pass;
 
 
 void main()
@@ -54,7 +51,7 @@ void main()
     // Position of cell from top-left
     vec2 cellPosition = cellDim * gridCoords;
 
-    if (backgroundPass != 0) {
+    if (pass == 0) {
         vec2 finalPosition = cellPosition + cellDim * position;
         gl_Position = vec4(projectionOffset + projectionScale * finalPosition, 0.0, 1.0);
 
@@ -74,5 +71,4 @@ void main()
 
     bg = vec4(backgroundColor.rgb / 255.0, backgroundColor.a);
     fg = textColor / vec3(255.0, 255.0, 255.0);
-    preColored = preColoredGlyph;
 }

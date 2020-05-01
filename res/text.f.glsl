@@ -15,8 +15,7 @@
 in vec2 TexCoords;
 flat in vec3 fg;
 flat in vec4 bg;
-flat in int preColored;
-uniform int backgroundPass;
+uniform int pass;
 
 layout(location = 0, index = 0) out vec4 color;
 layout(location = 0, index = 1) out vec4 alphaMask;
@@ -25,21 +24,22 @@ uniform sampler2D mask;
 
 void main()
 {
-    if (backgroundPass != 0) {
+    if (pass == 0) {
+        // background
         if (bg.a == 0.0)
             discard;
 
         alphaMask = vec4(1.0);
         color = vec4(bg.rgb, 1.0);
+    } else if (pass == 1) {
+        // regular text glyphs
+        vec3 textColor = texture(mask, TexCoords).rgb;
+        alphaMask = vec4(textColor, textColor.r);
+        color = vec4(fg, 1.0);
     } else {
-        if (preColored != 0) {
-            vec4 c = texture(mask, TexCoords);
-            alphaMask = vec4(c.a);
-            color = c;
-        } else {
-            vec3 textColor = texture(mask, TexCoords).rgb;
-            alphaMask = vec4(textColor, textColor.r);
-            color = vec4(fg, 1.0);
-        }
+        // colored glyphs
+        vec4 c = texture(mask, TexCoords);
+        alphaMask = vec4(c.a);
+        color = c;
     }
 }
