@@ -541,21 +541,22 @@ impl FreeTypeRasterizer {
             PixelMode::Lcd => {
                 for i in 0..bitmap.rows() {
                     let start = (i as usize) * pitch;
-                    let stop = start + bitmap.width() as usize;
-                    packed.extend_from_slice(&buf[start..stop]);
+                    //let stop = start + bitmap.width() as usize;
+                    for j in 0..(bitmap.width() / 3) {
+                        let offset = start + (j as usize) * 3;
+                        packed.push(buf[offset]);
+                    }
                 }
-                Ok((bitmap.rows(), bitmap.width() / 3, BitmapBuffer::RGB(packed)))
+                Ok((bitmap.rows(), bitmap.width() / 3, BitmapBuffer::RED(packed)))
             },
             PixelMode::LcdV => {
                 for i in 0..bitmap.rows() / 3 {
                     for j in 0..bitmap.width() {
-                        for k in 0..3 {
-                            let offset = ((i as usize) * 3 + k) * pitch + (j as usize);
-                            packed.push(buf[offset]);
-                        }
+                        let offset = ((i as usize) * 3) * pitch + (j as usize);
+                        packed.push(buf[offset]);
                     }
                 }
-                Ok((bitmap.rows() / 3, bitmap.width(), BitmapBuffer::RGB(packed)))
+                Ok((bitmap.rows() / 3, bitmap.width(), BitmapBuffer::RED(packed)))
             },
             // Mono data is stored in a packed format using 1 bit per pixel.
             PixelMode::Mono => {
@@ -567,8 +568,6 @@ impl FreeTypeRasterizer {
                         // Push value 3x since result buffer should be 1 byte
                         // per channel.
                         res.push(value);
-                        res.push(value);
-                        res.push(value);
                         count -= 1;
                         bit -= 1;
                     }
@@ -577,16 +576,15 @@ impl FreeTypeRasterizer {
                 for i in 0..(bitmap.rows() as usize) {
                     let mut columns = bitmap.width();
                     let mut byte = 0;
-                    let offset = i * bitmap.pitch().abs() as usize;
                     while columns != 0 {
                         let bits = min(8, columns);
-                        unpack_byte(&mut packed, buf[offset + byte], bits as u8);
+                        unpack_byte(&mut packed, buf[i + byte], bits as u8);
 
                         columns -= bits;
                         byte += 1;
                     }
                 }
-                Ok((bitmap.rows(), bitmap.width(), BitmapBuffer::RGB(packed)))
+                Ok((bitmap.rows(), bitmap.width(), BitmapBuffer::RED(packed)))
             },
             // Gray data is stored as a value between 0 and 255 using 1 byte per pixel.
             PixelMode::Gray => {
@@ -595,11 +593,9 @@ impl FreeTypeRasterizer {
                     let stop = start + bitmap.width() as usize;
                     for byte in &buf[start..stop] {
                         packed.push(*byte);
-                        packed.push(*byte);
-                        packed.push(*byte);
                     }
                 }
-                Ok((bitmap.rows(), bitmap.width(), BitmapBuffer::RGB(packed)))
+                Ok((bitmap.rows(), bitmap.width(), BitmapBuffer::RED(packed)))
             },
             PixelMode::Bgra => {
                 let buf_size = (bitmap.rows() * bitmap.width() * 4) as usize;

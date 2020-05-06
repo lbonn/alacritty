@@ -34,7 +34,7 @@ void main()
     } else if (pass == 1) {
         // regular text glyphs
         vec3 textColor = texture(mask, TexCoords).rgb;
-        alphaMask = vec4(textColor, textColor.r);
+        alphaMask = vec4(textColor.r);
         color = vec4(fg, 1.0);
     } else {
         // colored glyphs

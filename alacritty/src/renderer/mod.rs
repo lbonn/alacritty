@@ -707,7 +707,7 @@ impl QuadRenderer {
         let mut layers = Vec::new();
         layers.push(Layer::new());
         layers.push(Layer::new());
-        layers[0].atlas.push(Atlas::new(ATLAS_SIZE, gl::RGB));
+        layers[0].atlas.push(Atlas::new(ATLAS_SIZE, gl::RED));
         layers[1].atlas.push(Atlas::new(ATLAS_SIZE, gl::RGBA));
 
         let renderer = Self {
@@ -1110,7 +1110,7 @@ fn load_glyph(
     rasterized: &RasterizedGlyph,
 ) -> Glyph {
     let (layer, atlas_type) = &mut match rasterized.buf {
-        BitmapBuffer::RGB(_) => (&mut layers[0], gl::RGB),
+        BitmapBuffer::RED(_) => (&mut layers[0], gl::RED),
         BitmapBuffer::RGBA(_) => (&mut layers[1], gl::RGBA),
     };
     let current_atlas = &mut layer.current_atlas;
@@ -1608,9 +1608,9 @@ impl Atlas {
 
             // Load data into OpenGL.
             let (format, buf) = match &glyph.buf {
-                BitmapBuffer::RGB(buf) => {
+                BitmapBuffer::RED(buf) => {
                     colored = false;
-                    (gl::RGB, buf)
+                    (gl::RED, buf)
                 },
                 BitmapBuffer::RGBA(buf) => {
                     colored = true;
